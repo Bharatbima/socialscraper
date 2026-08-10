@@ -1,0 +1,39 @@
+name: Weekly Insurance Digest
+
+on:
+  schedule:
+    - cron: '30 0 * * 1'   # Monday 6:00 AM IST (UTC+5:30 → 00:30 UTC)
+  workflow_dispatch:        # Allow manual trigger from GitHub UI
+
+jobs:
+  run-digest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # Needed to commit digest files back to repo
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run digest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python main.py
+
+      - name: Commit digest to repo
+        run: |
+          git config user.name "Bharat Bima Digest Bot"
+          git config user.email "bot@bharatbima.co"
+          git add digests/
+          git diff --staged --quiet || git commit -m "Weekly digest $(date +'%Y-%m-%d')"
+          git push
