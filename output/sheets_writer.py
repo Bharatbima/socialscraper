@@ -1,197 +1,122 @@
-import json
 import logging
-import os
-from datetime import datetime, timezone
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Column layout for the Articles sheet (1-indexed for Sheets API)
-ARTICLES_HEADERS = [
-    "Date", "Week", "Source", "Title", "URL",
-    "Summary", "Tags", "LinkedIn Signal",
+_ARTICLES_HEADERS = ["Date", "Source", "Title", "URL", "Summary", "Tags", "LinkedIn Signal", "Week"]
+_DIGESTS_HEADERS = ["Date", "Item Count", "Digest Markdown"]
+
+_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
 ]
 
-# Column layout for the Digests sheet
-DIGESTS_HEADERS = ["Date", "Week", "Item Count", "Digest Markdown"]
+
+def _get_client():
+    import google.auth
+    import gspread
+
+    creds, _ = google.auth.default(scopes=_SCOPES)
+    return gspread.authorize(creds)
 
 
-def _get_sheets_service():
-    """Build and return an authenticated Google Sheets service client."""
-    from google.oauth2.service_account import Credentials
-    from googleapiclient.discovery import build
-
-    creds_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if not creds_json:
-        raise EnvironmentError("GOOGLE_SERVICE_ACCOUNT_JSON env var not set")
-
-    creds_dict = json.loads(creds_json)
-    creds = Credentials.from_service_account_info(
-        creds_dict,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
-    return build("sheets", "v4", credentials=creds, cache_discovery=False)
-
-
-def _ensure_headers(service, spreadsheet_id: str, sheet_name: str, headers: list[str]) -> None:
-    """Write headers to row 1 if the sheet is empty."""
-    result = (
-        service.spreadsheets()
-        .values()
-        .get(spreadsheetId=spreadsheet_id, range=f"{sheet_name}!A1:A1")
-        .execute()
-    )
-    if not result.get("values"):
-        service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=f"{sheet_name}!A1",
-            valueInputOption="RAW",
-            body={"values": [headers]},
-        ).execute()
-        logger.info("Headers written to %s sheet", sheet_name)
-
-
-def _get_existing_urls(service, spreadsheet_id: str) -> set[str]:
-    """Return all URLs already in the Articles sheet to deduplicate."""
+def _get_existing_urls(worksheet) -> set[str]:
     try:
-        result = (
-            service.spreadsheets()
-            .values()
-            .get(spreadsheetId=spreadsheet_id, range="Articles!E:E")
-            .execute()
-        )
-        rows = result.get("values", [])
-        return {row[0] for row in rows if row}
+        # URL is column D (index 3)
+        url_col = worksheet.col_values(4)
+        return set(url_col[1:])  # skip header row
     except Exception as exc:
-        logger.warning("Could not fetch existing URLs: %s", exc)
+        logger.warning("Could not fetch existing URLs for dedup: %s", exc)
         return set()
 
 
-def _extract_linkedin_signal(item: dict, summarized_content: str) -> str:
-    """Try to infer the LinkedIn signal for an item from the summarized content."""
-    title = item.get("title", "").lower()
-    if not title:
+def _infer_linkedin_signal(item: dict, summarized_content: str) -> str:
+    """Best-effort extraction of YES/NO signal from summarized content."""
+    title_words = item.get("title", "").lower().split()[:4]
+    if not title_words:
         return ""
-    # Look for the title (or a fragment) near a YES/NO signal in the summary
     for line in summarized_content.split("\n"):
-        if any(word in line.lower() for word in title.split()[:3]):
-            if "YES" in line:
+        line_lower = line.lower()
+        if sum(1 for w in title_words if w in line_lower) >= 2:
+            if "yes" in line_lower and ("linkedin" in line_lower or "signal" in line_lower):
                 return "YES"
-            if "NO" in line:
+            if "no" in line_lower and ("linkedin" in line_lower or "signal" in line_lower):
                 return "NO"
     return ""
 
 
-def write_articles_to_sheets(
-    items: list[dict],
-    summarized_content: str,
-    spreadsheet_id: str,
-    week_label: str,
-) -> int:
-    """Append new articles to the Articles sheet. Returns count of rows added."""
+def append_articles(items: list[dict], sheet_id: str, summarized_content: str = "") -> int:
+    """
+    Append new articles to the 'Articles' tab.
+    Deduplicates by URL. Returns count of rows added.
+    """
     try:
-        service = _get_sheets_service()
+        gc = _get_client()
+        ws = gc.open_by_key(sheet_id).worksheet("Articles")
     except Exception as exc:
-        logger.error("Google Sheets auth failed: %s", exc)
+        logger.error("Could not open Articles sheet: %s", exc)
         return 0
 
     try:
-        _ensure_headers(service, spreadsheet_id, "Articles", ARTICLES_HEADERS)
-        existing_urls = _get_existing_urls(service, spreadsheet_id)
+        # Write headers if sheet is empty
+        if not ws.row_values(1):
+            ws.append_row(_ARTICLES_HEADERS, value_input_option="RAW")
+
+        existing_urls = _get_existing_urls(ws)
+        week_label = f"Week of {datetime.now().strftime('%d %b %Y').lstrip('0')}"
 
         rows = []
         for item in items:
             url = item.get("url", "")
-            if url in existing_urls:
+            if not url or url in existing_urls:
                 continue
             existing_urls.add(url)
-
-            linkedin_signal = _extract_linkedin_signal(item, summarized_content)
-            rows.append(
-                [
-                    item.get("published_date", ""),
-                    week_label,
-                    item.get("source", ""),
-                    item.get("title", ""),
-                    url,
-                    item.get("summary", ""),
-                    ", ".join(item.get("tags", [])),
-                    linkedin_signal,
-                ]
-            )
+            rows.append([
+                item.get("published_date", ""),
+                item.get("source", ""),
+                item.get("title", ""),
+                url,
+                item.get("summary", ""),
+                ", ".join(item.get("tags", [])),
+                _infer_linkedin_signal(item, summarized_content),
+                week_label,
+            ])
 
         if not rows:
-            logger.info("No new articles to add to Sheets (all duplicates)")
+            logger.info("No new articles to append (all duplicates)")
             return 0
 
-        service.spreadsheets().values().append(
-            spreadsheetId=spreadsheet_id,
-            range="Articles!A1",
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body={"values": rows},
-        ).execute()
-
-        logger.info("Added %d new article rows to Sheets", len(rows))
+        ws.append_rows(rows, value_input_option="RAW")
+        logger.info("Appended %d new article rows to Sheets", len(rows))
         return len(rows)
 
     except Exception as exc:
-        logger.error("Failed to write articles to Sheets: %s", exc)
+        logger.error("Failed to append articles to Sheets: %s", exc)
         return 0
 
 
-def write_digest_to_sheets(
-    markdown_content: str,
-    item_count: int,
-    spreadsheet_id: str,
-    date: datetime,
-    week_label: str,
-) -> None:
-    """Append one digest row to the Digests sheet."""
+def append_digest(markdown: str, item_count: int, sheet_id: str) -> None:
+    """
+    Append one digest row to the 'Digests' tab.
+    """
     try:
-        service = _get_sheets_service()
+        gc = _get_client()
+        ws = gc.open_by_key(sheet_id).worksheet("Digests")
     except Exception as exc:
-        logger.error("Google Sheets auth failed: %s", exc)
+        logger.error("Could not open Digests sheet: %s", exc)
         return
 
     try:
-        _ensure_headers(service, spreadsheet_id, "Digests", DIGESTS_HEADERS)
+        if not ws.row_values(1):
+            ws.append_row(_DIGESTS_HEADERS, value_input_option="RAW")
 
         row = [
-            date.strftime("%Y-%m-%d"),
-            week_label,
+            datetime.now().strftime("%Y-%m-%d"),
             item_count,
-            markdown_content,
+            markdown,
         ]
-
-        service.spreadsheets().values().append(
-            spreadsheetId=spreadsheet_id,
-            range="Digests!A1",
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body={"values": [row]},
-        ).execute()
-
+        ws.append_row(row, value_input_option="RAW")
         logger.info("Digest row written to Sheets")
 
     except Exception as exc:
-        logger.error("Failed to write digest to Sheets: %s", exc)
-
-
-def write_to_sheets(
-    items: list[dict],
-    summarized_content: str,
-    markdown_content: str,
-    date: datetime,
-) -> None:
-    """Main entry point: write articles + digest to Google Sheets."""
-    spreadsheet_id = os.environ.get("GOOGLE_SHEET_ID")
-    if not spreadsheet_id:
-        logger.warning("GOOGLE_SHEET_ID not set — skipping Sheets export")
-        return
-
-    week_label = f"Week of {date.strftime('%d %b %Y').lstrip('0')}"
-
-    added = write_articles_to_sheets(items, summarized_content, spreadsheet_id, week_label)
-    write_digest_to_sheets(markdown_content, len(items), spreadsheet_id, date, week_label)
-
-    print(f"Google Sheets: {added} new articles added, digest logged.")
+        logger.error("Failed to append digest to Sheets: %s", exc)

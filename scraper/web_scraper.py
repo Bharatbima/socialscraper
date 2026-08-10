@@ -7,9 +7,9 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-SEVEN_DAYS_AGO = datetime.now(timezone.utc) - timedelta(days=7)
+_SEVEN_DAYS_AGO = datetime.now(timezone.utc) - timedelta(days=7)
 
-HEADERS = {
+_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -22,8 +22,7 @@ HEADERS = {
 def _parse_irdai_date(text: str) -> datetime | None:
     for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%B %d, %Y", "%d %B %Y"):
         try:
-            dt = datetime.strptime(text.strip(), fmt)
-            return dt.replace(tzinfo=timezone.utc)
+            return datetime.strptime(text.strip(), fmt).replace(tzinfo=timezone.utc)
         except ValueError:
             continue
     return None
@@ -37,7 +36,7 @@ def scrape_irdai(source: dict) -> list[dict]:
     time.sleep(2)
 
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp = requests.get(url, headers=_HEADERS, timeout=15)
         resp.raise_for_status()
     except requests.RequestException as exc:
         logger.error("Failed to scrape %s: %s", name, exc)
@@ -47,8 +46,11 @@ def scrape_irdai(source: dict) -> list[dict]:
     items: list[dict] = []
     seen_urls: set[str] = set()
 
-    # IRDAI pages list items in <table> rows or <ul> lists with date + title + link
-    rows = soup.select("table tr") or soup.select("ul.list-group li") or soup.select("div.view-content .views-row")
+    rows = (
+        soup.select("table tr")
+        or soup.select("ul.list-group li")
+        or soup.select("div.view-content .views-row")
+    )
 
     for row in rows:
         link_tag = row.find("a", href=True)
@@ -63,7 +65,6 @@ def scrape_irdai(source: dict) -> list[dict]:
             continue
         seen_urls.add(href)
 
-        # Try to find a date nearby
         date_text = ""
         for td in row.find_all(["td", "span", "div"]):
             text = td.get_text(strip=True)
@@ -72,19 +73,17 @@ def scrape_irdai(source: dict) -> list[dict]:
                 break
 
         pub_date = _parse_irdai_date(date_text) if date_text else None
-        if pub_date and pub_date < SEVEN_DAYS_AGO:
+        if pub_date and pub_date < _SEVEN_DAYS_AGO:
             continue
 
-        items.append(
-            {
-                "source": name,
-                "title": title,
-                "url": href,
-                "published_date": pub_date.isoformat() if pub_date else "",
-                "summary": "",
-                "tags": tags,
-            }
-        )
+        items.append({
+            "source": name,
+            "title": title,
+            "url": href,
+            "published_date": pub_date.isoformat() if pub_date else "",
+            "summary": "",
+            "tags": tags,
+        })
 
     logger.info("Scraped %d items from %s", len(items), name)
     return items

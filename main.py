@@ -1,13 +1,14 @@
 """
-Bharat Bima Weekly Insurance Digest — main entry point.
+Bharat Bima Weekly Insurance Digest
 
 Usage:
-    python main.py            # Full run: scrape, summarize, save, push to Sheets
-    python main.py --dry-run  # Same but skip saving files and Sheets write
+    python main.py            # Full run
+    python main.py --dry-run  # Skip saving files and Sheets write
 """
 
 import argparse
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 
@@ -19,7 +20,7 @@ from scraper.web_scraper import scrape_irdai
 from processor.summarizer import summarize_items
 from processor.formatter import format_digest
 from output.digest_writer import save_digest
-from output.sheets_writer import write_to_sheets
+from output.sheets_writer import append_articles, append_digest
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +28,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("main")
+
+DEFAULT_SHEET_ID = "1tz6ACayzo58uyzcJnr-37RHUbgCqE474OeCpoj21XIU"
 
 
 def collect_items() -> list[dict]:
@@ -40,7 +43,7 @@ def collect_items() -> list[dict]:
             elif source["type"] == "scrape":
                 items = scrape_irdai(source)
             else:
-                logger.warning("Unknown source type %s for %s", source["type"], source["name"])
+                logger.warning("Unknown source type '%s' for %s", source["type"], source["name"])
                 continue
         except Exception as exc:
             logger.error("Unexpected error fetching %s: %s", source["name"], exc)
@@ -58,46 +61,50 @@ def collect_items() -> list[dict]:
 def main(dry_run: bool = False) -> None:
     load_dotenv()
     now = datetime.now(timezone.utc)
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID", DEFAULT_SHEET_ID)
 
     logger.info("=== Bharat Bima Weekly Digest — %s ===", now.strftime("%Y-%m-%d"))
+    if dry_run:
+        logger.info("DRY RUN — no files or Sheets will be written")
 
     # 1. Collect
-    logger.info("Collecting news from %d sources…", len(SOURCES))
+    logger.info("Collecting from %d sources…", len(SOURCES))
     items = collect_items()
-    logger.info("Total unique items collected: %d", len(items))
-
-    if not items:
-        logger.warning("No items collected — digest will be empty")
+    logger.info("Total unique items: %d", len(items))
 
     # 2. Summarize
     logger.info("Summarizing with Claude…")
-    summarized = summarize_items(items)
+    try:
+        summarized = summarize_items(items)
+    except Exception as exc:
+        logger.error("Summarization failed: %s", exc)
+        sys.exit(1)
 
     # 3. Format
     logger.info("Formatting digest…")
     markdown = format_digest(summarized, now)
 
     if dry_run:
-        print("\n--- DRY RUN — digest not saved ---\n")
+        print("\n--- DRY RUN — digest preview (first 3000 chars) ---\n")
         print(markdown[:3000])
-        print("\n[truncated — full digest would be saved to digests/]")
+        print("\n--- End of preview ---")
         return
 
     # 4. Save to file
     save_digest(markdown, now)
 
-    # 5. Push to Google Sheets
-    write_to_sheets(items, summarized, markdown, now)
+    # 5. Write to Google Sheets (failures are logged, not raised)
+    logger.info("Writing to Google Sheets…")
+    added = append_articles(items, sheet_id, summarized)
+    append_digest(markdown, len(items), sheet_id)
+    print(f"Google Sheets: {added} new articles added.")
 
     print(f"\nDigest complete — {len(items)} items processed.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Bharat Bima Weekly Insurance Digest")
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Run pipeline without saving files or writing to Sheets",
-    )
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Run pipeline without saving files or writing to Sheets")
     args = parser.parse_args()
     main(dry_run=args.dry_run)

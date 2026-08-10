@@ -14,20 +14,6 @@ SOURCES = [
         "tags": ["Market", "Industry"],
     },
     {
-        "name": "BusinessLine",
-        "url": "https://www.thehindubusinessline.com/economy/rss?id=421446",
-        "type": "rss",
-        "priority": "medium",
-        "tags": ["Market", "Industry"],
-    },
-    {
-        "name": "MoneyControl Insurance",
-        "url": "https://www.moneycontrol.com/rss/insurance.xml",
-        "type": "rss",
-        "priority": "medium",
-        "tags": ["Market", "Industry"],
-    },
-    {
         "name": "Google News - IRDAI",
         "url": "https://news.google.com/rss/search?q=IRDAI+insurance+India&hl=en-IN&gl=IN&ceid=IN:en",
         "type": "rss",
@@ -58,13 +44,6 @@ SOURCES = [
     {
         "name": "IRDAI Press Releases",
         "url": "https://irdai.gov.in/press-releases",
-        "type": "scrape",
-        "priority": "high",
-        "tags": ["IRDAI", "Regulation"],
-    },
-    {
-        "name": "IRDAI Circulars",
-        "url": "https://irdai.gov.in/circulars",
         "type": "scrape",
         "priority": "high",
         "tags": ["IRDAI", "Regulation"],

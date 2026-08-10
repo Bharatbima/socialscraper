@@ -6,9 +6,9 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
-POST_ANGLES_PROMPT = """Based on the high-priority insurance news items below, suggest 3-4 concise LinkedIn post angles for Bharat Bima Insurance Broking.
+_POST_ANGLES_PROMPT = """Based on the high-priority insurance news items below, suggest 3-4 concise LinkedIn post angles for Bharat Bima Insurance Broking.
 
-Each angle should be one line: a hook or topic that would work as a post. Think: what would resonate with HR managers, CFOs, or business owners who buy group insurance?
+Each angle should be one line — a hook or topic that would resonate with HR managers, CFOs, or business owners who buy group insurance. Focus on what's actionable or surprising.
 
 Return just a numbered list, nothing else.
 
@@ -17,35 +17,25 @@ High-priority items:
 
 
 def _extract_linkedin_items(summarized_content: str) -> list[str]:
+    """Pull out item lines that are near a LinkedIn Signal: YES marker."""
     lines = summarized_content.split("\n")
-    linkedin_items = []
-    current_item_lines: list[str] = []
-    capture = False
+    linkedin_items: list[str] = []
 
-    for line in lines:
-        if "LinkedIn signal: YES" in line or "LinkedIn Signal: YES" in line:
-            capture = True
-        if capture and line.strip().startswith(("- ", "* ", "1.", "2.", "3.", "4.", "5.")):
-            if current_item_lines:
-                linkedin_items.append(" ".join(current_item_lines).strip())
-                current_item_lines = []
-            current_item_lines.append(line.strip())
-        elif capture and current_item_lines and line.strip():
-            current_item_lines.append(line.strip())
-        elif capture and not line.strip() and current_item_lines:
-            linkedin_items.append(" ".join(current_item_lines).strip())
-            current_item_lines = []
-            capture = False
+    for i, line in enumerate(lines):
+        if "YES" in line and ("LinkedIn" in line or "Signal" in line):
+            # grab the nearest preceding non-empty line as the item title
+            for j in range(i - 1, max(i - 5, -1), -1):
+                candidate = lines[j].strip()
+                if candidate and not candidate.startswith("#"):
+                    linkedin_items.append(candidate)
+                    break
 
-    if current_item_lines:
-        linkedin_items.append(" ".join(current_item_lines).strip())
-
-    # Fallback: grab lines that mention YES
+    # fallback: lines containing YES that look like content
     if not linkedin_items:
         linkedin_items = [
             line.strip()
             for line in lines
-            if "YES" in line and len(line.strip()) > 10
+            if "YES" in line and len(line.strip()) > 15
         ]
 
     return linkedin_items[:8]
@@ -54,7 +44,7 @@ def _extract_linkedin_items(summarized_content: str) -> list[str]:
 def _generate_post_angles(linkedin_items: list[str]) -> str:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key or not linkedin_items:
-        return "- Review high-priority items above for post ideas"
+        return "- Review high-priority items above for post ideas."
 
     client = anthropic.Anthropic(api_key=api_key)
     items_text = "\n".join(f"- {item}" for item in linkedin_items)
@@ -63,22 +53,18 @@ def _generate_post_angles(linkedin_items: list[str]) -> str:
         message = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=512,
-            messages=[
-                {
-                    "role": "user",
-                    "content": POST_ANGLES_PROMPT.format(items=items_text),
-                }
-            ],
+            messages=[{
+                "role": "user",
+                "content": _POST_ANGLES_PROMPT.format(items=items_text),
+            }],
         )
         return message.content[0].text.strip()
     except anthropic.APIError as exc:
         logger.warning("Could not generate post angles: %s", exc)
-        return "- Check high-priority items above for post ideas"
+        return "- Check high-priority items above for post ideas."
 
 
 def format_digest(summarized_content: str, date: datetime) -> str:
-    week_label = date.strftime("%-d %b %Y") if hasattr(date, "strftime") else str(date)
-    # Windows-safe date formatting
     try:
         week_label = date.strftime("%d %b %Y").lstrip("0")
     except Exception:
@@ -89,13 +75,12 @@ def format_digest(summarized_content: str, date: datetime) -> str:
     linkedin_items = _extract_linkedin_items(summarized_content)
     post_angles = _generate_post_angles(linkedin_items)
 
-    high_priority_section = ""
     if linkedin_items:
         high_priority_section = "\n".join(f"- {item}" for item in linkedin_items)
     else:
         high_priority_section = "_No items flagged as LinkedIn-ready this week._"
 
-    digest = f"""# Bharat Bima Weekly Insurance Digest — Week of {week_label}
+    return f"""# Bharat Bima Weekly Insurance Digest — Week of {week_label}
 
 ---
 
@@ -119,4 +104,3 @@ def format_digest(summarized_content: str, date: datetime) -> str:
 
 _Generated: {generated_at}_
 """
-    return digest

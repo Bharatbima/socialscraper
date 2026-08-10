@@ -5,7 +5,7 @@ import feedparser
 
 logger = logging.getLogger(__name__)
 
-SEVEN_DAYS_AGO = datetime.now(timezone.utc) - timedelta(days=7)
+_SEVEN_DAYS_AGO = datetime.now(timezone.utc) - timedelta(days=7)
 
 
 def _parse_date(entry) -> datetime | None:
@@ -17,6 +17,14 @@ def _parse_date(entry) -> datetime | None:
             except Exception:
                 pass
     return None
+
+
+def _strip_html(text: str) -> str:
+    try:
+        from bs4 import BeautifulSoup
+        return BeautifulSoup(text, "lxml").get_text(separator=" ").strip()
+    except Exception:
+        return text
 
 
 def fetch_rss_items(source: dict) -> list[dict]:
@@ -43,28 +51,20 @@ def fetch_rss_items(source: dict) -> list[dict]:
         seen_urls.add(link)
 
         pub_date = _parse_date(entry)
-        if pub_date and pub_date < SEVEN_DAYS_AGO:
+        if pub_date and pub_date < _SEVEN_DAYS_AGO:
             continue
 
         title = getattr(entry, "title", "").strip()
-        summary = getattr(entry, "summary", "").strip()
-        # Strip HTML tags from summary if present
-        try:
-            from bs4 import BeautifulSoup
-            summary = BeautifulSoup(summary, "lxml").get_text(separator=" ").strip()
-        except Exception:
-            pass
+        summary = _strip_html(getattr(entry, "summary", "").strip())
 
-        items.append(
-            {
-                "source": name,
-                "title": title,
-                "url": link,
-                "published_date": pub_date.isoformat() if pub_date else "",
-                "summary": summary[:500],
-                "tags": tags,
-            }
-        )
+        items.append({
+            "source": name,
+            "title": title,
+            "url": link,
+            "published_date": pub_date.isoformat() if pub_date else "",
+            "summary": summary[:500],
+            "tags": tags,
+        })
 
     logger.info("Fetched %d items from %s", len(items), name)
     return items
