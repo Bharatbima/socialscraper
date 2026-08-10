@@ -2,12 +2,12 @@ name: Weekly Insurance Digest
 
 on:
   schedule:
-    - cron: '30 0 * * 1'   # Monday 6:00 AM IST (00:30 UTC)
+    - cron: '30 0 * * 1'
   workflow_dispatch:
 
 permissions:
   contents: write
-  id-token: write           # Required for Workload Identity Federation
+  id-token: write
 
 jobs:
   run-digest:
