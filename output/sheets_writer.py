@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -6,20 +7,17 @@ logger = logging.getLogger(__name__)
 _ARTICLES_HEADERS = ["Date", "Source", "Title", "URL", "Summary", "Tags", "LinkedIn Signal", "Week"]
 _DIGESTS_HEADERS = ["Date", "Item Count", "Digest Markdown"]
 
-_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-
 
 def _get_client():
-    import google.auth
-    from google.auth.transport.requests import AuthorizedSession
+    from google.oauth2.credentials import Credentials
     import gspread
 
-    creds, project = google.auth.default(scopes=_SCOPES)
-    logger.info("Google auth: project=%s, cred_type=%s", project, type(creds).__name__)
+    token = os.environ.get("GOOGLE_ACCESS_TOKEN")
+    if not token:
+        raise EnvironmentError("GOOGLE_ACCESS_TOKEN not set")
 
-    gc = gspread.Client(auth=creds)
-    gc.session = AuthorizedSession(creds)
-    return gc
+    creds = Credentials(token=token)
+    return gspread.Client(auth=creds)
 
 
 def _get_existing_urls(worksheet) -> set[str]:
